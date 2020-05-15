@@ -179,60 +179,6 @@ function loadImage (url) {
 }
 
 
-async function renderImage (img_url, link_url, el, callback) {
-    if (u.isImageURL(img_url)) {
-        let img;
-        try {
-            img = await loadImage(img_url);
-        } catch (e) {
-            log.error(e);
-            return callback();
-        }
-        sizzle(`a[href="${link_url}"]`, el).forEach(a => {
-            a.innerHTML = "";
-            u.addClass('chat-image__link', a);
-            u.addClass('chat-image', img);
-            u.addClass('img-thumbnail', img);
-            a.insertAdjacentElement('afterBegin', img);
-        });
-    }
-    callback();
-}
-
-
-/**
- * Returns a Promise which resolves once all images have been loaded.
- * @method u#renderImageURLs
- * @param { _converse }
- * @param { HTMLElement }
- * @returns { Promise }
- */
-u.renderImageURLs = function (_converse, el) {
-    if (!_converse.api.settings.get('show_images_inline')) {
-        return Promise.resolve();
-    }
-    const list = el.textContent.match(URL_REGEX) || [];
-    return Promise.all(
-        list.map(url =>
-            new Promise(resolve => {
-                let image_url = getURI(url);
-                if (['imgur.com', 'pbs.twimg.com'].includes(image_url.hostname()) && !u.isImageURL(url)) {
-                    const format = (image_url.hostname() === 'pbs.twimg.com') ? image_url.search(true).format : 'png';
-                    image_url = image_url.removeSearch(/.*/).toString() + `.${format}`;
-                    renderImage(image_url, url, el, resolve);
-                } else {
-                    renderImage(url, url, el, resolve);
-                }
-            })
-        )
-    )
-};
-
-
-u.renderNewLines = function (text) {
-    return text.replace(/\n\n+/g, '<br/><br/>').replace(/\n/g, '<br/>');
-};
-
 u.calculateElementHeight = function (el) {
     /* Return the height of the passed in DOM element,
      * based on the heights of its children.
@@ -364,30 +310,54 @@ u.escapeHTML = function (string) {
         .replace(/"/g, "&quot;");
 };
 
-
-u.addMentionsMarkup = function (text, references, chatbox) {
-    if (chatbox.get('message_type') !== 'groupchat') {
-        return text;
+u.convertToImageTag = async function (url) {
+    const uri = getURI(url);
+    const img_url_without_ext = ['imgur.com', 'pbs.twimg.com'].includes(uri.hostname());
+    let src;
+    if (u.isImageURL(url) || img_url_without_ext) {
+        if (img_url_without_ext) {
+            const format = (uri.hostname() === 'pbs.twimg.com') ? uri.search(true).format : 'png';
+            src = uri.removeSearch(/.*/).toString() + `.${format}`;
+        } else {
+            src = url;
+        }
+        try {
+            await loadImage(src);
+        } catch (e) {
+            log.error(e);
+            return u.convertToHyperlink(url);
+        }
+        return tpl_image({url, src});
     }
-    const nick = chatbox.get('nick');
-    references
-        .sort((a, b) => b.begin - a.begin)
-        .forEach(ref => {
-            const prefix = text.slice(0, ref.begin);
-            const offset = ((prefix.match(/&lt;/g) || []).length + (prefix.match(/&gt;/g) || []).length) * 3;
-            const begin = parseInt(ref.begin, 10) + parseInt(offset, 10);
-            const end = parseInt(ref.end, 10) + parseInt(offset, 10);
-            const mention = text.slice(begin, end)
-            chatbox;
+}
 
-            if (mention === nick) {
-                text = text.slice(0, begin) + `<span class="mention mention--self badge badge-info">${mention}</span>` + text.slice(end);
-            } else {
-                text = text.slice(0, begin) + `<span class="mention">${mention}</span>` + text.slice(end);
-            }
-        });
-    return text;
-};
+
+u.convertToHyperlink = function (url) {
+    const uri = getURI(url);
+    if (uri === null) {
+        return url;
+    }
+    url = uri.normalize()._string;
+    const pretty_url = uri._parts.urn ? url : uri.readable();
+    if (!uri._parts.protocol && !url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'http://' + url;
+    }
+    if (uri._parts.protocol === 'xmpp' && uri._parts.query === 'join') {
+        return `<a target="_blank" rel="noopener" class="open-chatroom" href="${url}">${u.escapeHTML(pretty_url)}</a>`;
+    }
+    return `<a target="_blank" rel="noopener" href="${url}">${u.escapeHTML(pretty_url)}</a>`;
+}
+
+
+u.createElementFromURL = function (text) {
+    if (!text || !URL_REGEX.test(text)) {
+        return text;
+    } else if (u.isImageURL(text)) {
+        return u.convertToImageTag(text);
+    } else {
+        return u.convertToHyperlink(text);
+    }
+}
 
 u.convertUriToHyperlink = function (uri, urlAsTyped) {
     let normalizedUrl = uri.normalize()._string;
@@ -427,15 +397,19 @@ u.convertUrlToHyperlink = function (url) {
 };
 
 u.addHyperlinks = function (text) {
-    try {
-        const parse_options = {
-            'start': /\b(?:([a-z][a-z0-9.+-]*:\/\/)|xmpp:|mailto:|www\.)/gi
-        };
-        return URI.withinString(text, url => u.convertUrlToHyperlink(url), parse_options);
-    } catch (error) {
-        log.debug(error);
-        return text;
-    }
+    const list = text.split(URL_REGEX) || [text];
+    return Promise.all(list.map(i => u.createElementFromURL(i)));
+
+    // FIXME: merge in Ariel's stuff
+    // try {
+    //     const parse_options = {
+    //         'start': /\b(?:([a-z][a-z0-9.+-]*:\/\/)|xmpp:|mailto:|www\.)/gi
+    //     };
+    //     return URI.withinString(text, url => u.convertUrlToHyperlink(url), parse_options);
+    // } catch (error) {
+    //     log.debug(error);
+    //     return text;
+    // }
 };
 
 
